@@ -19,8 +19,6 @@ import urllib.request, urllib.error, urllib.parse
 import gzip
 import sys
 import codecs
-import pickle
-from distutils.util import strtobool
 from xml.dom import minidom
 
 # ============================================================
@@ -29,7 +27,6 @@ from xml.dom import minidom
 
 
 def ProcessBrokenSources(iMode):
-    global booDebug
     global strEndMessage
 
     intCancel = 0
@@ -44,15 +41,14 @@ def ProcessBrokenSources(iMode):
         progress = xbmcgui.DialogProgressBG()
     else:
         progress = xbmcgui.DialogProgress()
-
     progress.create(strMess, strMess2)
 
     sourcesS = ['pictures', 'music', 'video', 'files',]
-    Ppaths = []
 
     intObjects += len(sourcesS)
     intObjects += 0.1
 
+    mess1 = __addon__.getLocalizedString(30123)             # CAN NOT BE FOUND
 
     for k in sourcesS:
         # get paths from KODI sources
@@ -67,17 +63,18 @@ def ProcessBrokenSources(iMode):
 
         c += 1
 
-        for i, jj in enumerate(paths[:]):
+        for jj in paths[:]:
             if jj["file"][:9] != "addons://" and jj["file"][:6] != "rss://" and jj["file"][:6] != "ftp://" \
                 and jj["file"][:7] != "sftp://" and jj["file"][:7] != "http://" and jj["file"][:10] != "videodb://" \
                 and jj["file"][:10] != "musicdb://" and jj["file"][:7] != "cdda://":
                     afg = xbmcvfs.translatePath(jj["file"])
 
                     if xbmcvfs.exists(afg):
-                        xbmc.log("KCLEANER >> SOURCE PATHS (" + k +") >> " + afg + " >> ok")
+                        if booDebug:
+                            xbmc.log("KCLEANER >> SOURCE PATHS (" + k +") >> " + afg + " >> ok")
                     else:
-                        xbmc.log("KCLEANER >> SOURCE PATHS (" + k +") >> " + afg + " >> error")
-                        mess1 = __addon__.getLocalizedString(30123)             # CAN NOT BE FOUND
+                        if booDebug:
+                            xbmc.log("KCLEANER >> SOURCE PATHS (" + k +") >> " + afg + " >> error")
                         strEndMessage += "[SOURCE:" + k + "] " + afg + " [B][COLOR red]" + mess1 + "[/B][/COLOR]\n"
 
     progress.close()
@@ -107,71 +104,76 @@ class Sizes():
 # ============================================================
 
 def CalcDeleted():
-    global __addon__
-    global arr
-    global ignoreAniGifs
     global ignore_existing_thumbs
     global ignore_packages
 
     TotalfileSize = 0.0
     fileSize = 0.0
 
-    ignore_existing_thumbs = bool(strtobool(str(__addon__.getSetting('ignore_existing_thumbs').title())))
-    ignore_packages = int(__addon__.getSetting('ignore_packages'))
+    ignore_existing_thumbs = __settings__.getBool('ignore_existing_thumbs')
+    ignore_packages = __settings__.getInt('ignore_packages')
+
+    kodi_old_log = os.path.join(TEMP_PATH, "kodi.old.log")
+    if not os.path.isdir(kodi_old_log):
+        kodi_old_log = None
+
+    arccPath = os.path.join(TEMP_PATH, "archive_cache")
 
     totSizeArr = []
 
-    for j, entry in enumerate(arr):
+    for entry in arr:
         clear_cache_path = xbmcvfs.translatePath(entry[1])
 
         if os.path.exists(clear_cache_path):
             anigPath = os.path.join(clear_cache_path, "animatedgifs")
-            arccPath = os.path.join(xbmcvfs.translatePath("special://temp"), "archive_cache")
 
-            if entry[3] == 'thumbnails':
-                dataBase = os.path.join(xbmcvfs.translatePath("special://database/"), "Textures13.db")
-                conn = sqlite3.connect(dataBase)
-                c = conn.cursor()
+            conn = None
+            try:
+                if entry[3] == 'thumbnails':
+                    dataBase = os.path.join(xbmcvfs.translatePath("special://database/"), "Textures13.db")
+                    conn = sqlite3.connect(f"file:{dataBase}?mode=ro", uri=True)
+                    c = conn.cursor()
 
-            if entry[3] == 'packages' and ignore_packages > 0:
-                plist = getPackages()
+                if entry[3] == 'packages' and ignore_packages > 0:
+                    plist = getPackages()
 
-            for root, dirs, files in os.walk(clear_cache_path):
-                if (root != anigPath and root != arccPath) or (root == anigPath and not ignoreAniGifs):
-                    for f in files:
-                        try:
-                            fileSize = os.path.getsize(os.path.join(root, f))
-                        except Exception:
-                            fileSize = 0
+                for root, dirs, files in os.walk(clear_cache_path):
+                    if (root != anigPath and root != arccPath) or (root == anigPath and not ignoreAniGifs):
+                        for f in files:
+                            try:
+                                fileSize = os.path.getsize(os.path.join(root, f))
+                            except Exception:
+                                fileSize = 0
 
-                        if entry[3] == 'packages' and ignore_packages > 0:
-                            if f in plist:
+                            if entry[3] == 'packages' and ignore_packages > 0:
+                                if f in plist:
+                                    TotalfileSize += fileSize
+
+                            elif entry[3] == 'thumbnails' and ignore_existing_thumbs and not fast_thumb_check:
+                                thumbFolder = os.path.split(root)[1]
+                                thumbPath = thumbFolder + "/" + f
+
+                                sqlstr = "SELECT * FROM texture WHERE cachedurl = ?"
+                                c.execute(sqlstr, (thumbPath,))
+                                data = c.fetchone()
+
+                                if not data:
+                                    TotalfileSize += fileSize
+
+                            elif entry[3] == 'addons':
+                                if not entry[4]:
+                                    TotalfileSize += fileSize
+                            else:
                                 TotalfileSize += fileSize
 
-                        elif entry[3] == 'thumbnails' and ignore_existing_thumbs and not fast_thumb_check:
-                            thumbFolder = os.path.split(root)[1]
-                            thumbPath = thumbFolder + "/" + f
-
-                            sqlstr = "SELECT * FROM texture WHERE cachedurl=" + "'" + thumbPath + "'"
-                            c.execute(sqlstr)
-                            data = c.fetchone()
-
-                            if not data:
-                                TotalfileSize += fileSize
-
-                        elif entry[3] == 'addons':
-                            if not entry[4]:
-                                TotalfileSize += fileSize
-                        else:
-                            TotalfileSize += fileSize
-
-                    if entry[2]:
-                        for d in dirs:
-                            if os.path.join(root, d) != anigPath and os.path.join(root, d) != arccPath:
-                                TotalfileSize += getFolderSize(os.path.join(root, d))
-
-            if entry[3] == 'thumbnails':
-                conn.close()
+                        if entry[2]:
+                            for d in dirs:
+                                d2 = os.path.join(root, d)
+                                if d2 != anigPath and d2 != arccPath and d2 != kodi_old_log:
+                                    TotalfileSize += getFolderSize(d2)
+            finally:
+                if conn:
+                    conn.close()
 
             mess3 = " %0.2f " % ((TotalfileSize / (1048576.00000001)),)
             mess = entry[0] + mess3
@@ -186,7 +188,7 @@ def CalcDeleted():
 
     msizes = []
 
-    for i, line in enumerate(totSizeArr):
+    for line in totSizeArr:
         if line.cat == 'addons':
             addontot += float(line.size)
             totalsize += addontot
@@ -227,8 +229,9 @@ def CalcDeleted():
     mess = " %0.2f " % ((totalsize / (1048576.00000001)),)
     msizes.append(['total', mess])
 
-    for i, line in enumerate(msizes):
-        xbmc.log("KCLEANER >> CALCULATED SAVINGS >> " + str(line))
+    if booDebug:
+        for line in msizes:
+            xbmc.log("KCLEANER >> CALCULATED SAVINGS >> " + str(line))
 
     return msizes
 
@@ -239,9 +242,8 @@ def CalcDeleted():
 
 def ProcessSpecial(iMode):
     global strEndMessage
-    global __addon__
 
-    __addon__.setSetting('lock', 'true')
+    __settings__.setBool('lock', True)
     intCancel = 0
     intObjects = 0
     counter = 0
@@ -266,15 +268,14 @@ def ProcessSpecial(iMode):
 
     intObjects += 0.1
 
+    strMess = __addon__.getLocalizedString(30025)             # Checking:
+    strMess2 = __addon__.getLocalizedString(30018)            # Compacted:
     for root, dirs, files in os.walk(userDataPath):
         for f in files:
             if get_extension(f) == "xml":
                 if get_filename(f) == "settings" or root == userDataPath:
                     p = os.path.join(root, f)
                     pout = os.path.join(root, f + "_NEW")
-
-                    strMess = __addon__.getLocalizedString(30025)             # Checking:
-                    strMess2 = __addon__.getLocalizedString(30018)            # Compacted:
 
                     percent = (counter / intObjects) * 100
 
@@ -291,31 +292,25 @@ def ProcessSpecial(iMode):
                         except Exception:
                             pass
 
-                    fp = codecs.open(p, "r", "utf-8")
-
-                    if os.path.isfile(pout):
-                        try:
-                            os.remove(pout)
-                        except Exception:
-                            xbmc.log("KCLEANER >> COULDN'T DELETE OLD _NEW FILE")
-
-                    fpout = codecs.open(pout, "w", "utf-8")
-
                     wasChanged = False
+                    with codecs.open(p, "r", "utf-8") as fp:
+                        if os.path.isfile(pout):
+                            try:
+                                os.remove(pout)
+                            except Exception:
+                                xbmc.log("KCLEANER >> COULDN'T DELETE OLD _NEW FILE")
 
-                    for line in fp:
-                        if userDataPath in line:
-                            newline = line.replace(userDataPath, "special://userdata/")
-                            newline = newline.replace("\\", "/")
-                            xbmc.log("KCLEANER >> COMPACTING PATH: " + root + "\\" + f)
-                            wasChanged = True
-                        else:
-                            newline = line
+                        with codecs.open(pout, "w", "utf-8") as fpout:
+                            for line in fp:
+                                if userDataPath in line:
+                                    newline = line.replace(userDataPath, "special://userdata/")
+                                    newline = newline.replace("\\", "/")
+                                    xbmc.log("KCLEANER >> COMPACTING PATH: " + root + "\\" + f)
+                                    wasChanged = True
+                                else:
+                                    newline = line
 
-                        fpout.write(newline)
-
-                    fp.close()
-                    fpout.close()
+                                fpout.write(newline)
 
                     counter += 1
 
@@ -351,11 +346,9 @@ def ProcessSpecial(iMode):
 
 
 def CleanTextures(iMode):
-    global __addon__
-    global booDebug
     global strEndMessage
 
-    __addon__.setSetting('lock', 'true')
+    __settings__.setBool('lock', True)
     intCancel = 0
     intObjects = 0
     counter = 0
@@ -365,87 +358,87 @@ def CleanTextures(iMode):
 
     if iMode == 1:
         progress = xbmcgui.DialogProgressBG()
-        progress.create(strMess, strMess2)
     elif iMode == 0:
         progress = xbmcgui.DialogProgress()
-        progress.create(strMess, strMess2)
+    progress.create(strMess, strMess2)
 
     dataBase = os.path.join(xbmcvfs.translatePath("special://database/"), "Textures13.db")
     oldfileSize = os.path.getsize(dataBase)
-    conn = sqlite3.connect(dataBase)
-    c = conn.cursor()
-
-    c.execute("SELECT COUNT(*) FROM texture")
-    intObjects = c.fetchone()[0]
-    intObjects += 0.1
-
+    conn = None
     try:
-        c.execute("SELECT * FROM texture")
-        data = c.fetchall()
-    except Exception as e:
-        xbmc.log("KCLEANER >> SQL ERROR IN Textures13: " + str(e))
-        data = None
+        conn = sqlite3.connect(dataBase)
+        c = conn.cursor()
 
-    for d in data:
-        recID = d[0]
-        textureName = d[2].replace('/', os.sep)
-        thumbPath = os.path.join(xbmcvfs.translatePath("special://thumbnails"), textureName)
-        fileName = xbmcvfs.translatePath(d[1])
+        c.execute("SELECT COUNT(*) FROM texture")
+        intObjects = c.fetchone()[0]
+        intObjects += 0.1
 
+        try:
+            c.execute("SELECT * FROM texture")
+            data = c.fetchall()
+        except Exception as e:
+            xbmc.log("KCLEANER >> SQL ERROR IN Textures13: " + str(e))
+            data = None
+
+        SPECIAL_THUMBNAILS = xbmcvfs.translatePath("special://thumbnails")
         strMess = __addon__.getLocalizedString(30116)             # Checking record ID:
         strMess2 = __addon__.getLocalizedString(30014)            # Deleted:
 
-        percent = (counter / intObjects) * 100
+        for d in data:
+            recID = d[0]
+            textureName = d[2].replace('/', os.sep)
+            thumbPath = os.path.join(SPECIAL_THUMBNAILS, textureName)
+            fileName = xbmcvfs.translatePath(d[1])
 
-        message1 = strMess + str(recID) + "\n"
-        message2 = strMess2 + str(int(counter)) + " / " + str(int(intObjects))
+            percent = (counter / intObjects) * 100
 
-        if iMode < 2:
-            progress.update(int(percent), str(message1) + str(message2))
+            message1 = strMess + str(recID) + "\n"
+            message2 = strMess2 + str(int(counter)) + " / " + str(int(intObjects))
 
-        if iMode == 0:
-            try:
-                if progress.iscanceled():
-                    intCancel = 1
-                    break
-            except Exception:
-                pass
+            if iMode < 2:
+                progress.update(int(percent), str(message1) + str(message2))
 
-        if not os.path.isfile(thumbPath):
-            try:
-                c.execute("DELETE FROM texture WHERE id=?", (recID,))
-                conn.commit()
-
-                c.execute("DELETE FROM sizes WHERE idtexture=?", (recID,))
-                conn.commit()
-
-                if booDebug:
-                    xbmc.log("KCLEANER >> DELETED RECORD FROM DB: " + str(thumbPath))
-
-                counter += 1
-            except Exception as e:
-                xbmc.log("KCLEANER >> SQL ERROR IN Textures13 DELETING ID: " + str(recID) + " >> " + str(e))
-
-        if fileName.startswith("http://") or fileName.startswith("https://") or fileName.startswith("image://") or fileName.endswith("/transform?size=thumb"):
-            pass
-        else:
-            if not os.path.isfile(fileName):
+            if iMode == 0:
                 try:
-                    c.execute("DELETE FROM texture WHERE id=?", (recID,))
-                    conn.commit()
+                    if progress.iscanceled():
+                        intCancel = 1
+                        break
+                except Exception:
+                    pass
 
-                    c.execute("DELETE FROM sizes WHERE idtexture=?", (recID,))
-                    conn.commit()
+            if not os.path.isfile(thumbPath):
+                try:
+                    with conn:
+                        c.execute("DELETE FROM texture WHERE id=?", (recID,))
+                        c.execute("DELETE FROM sizes WHERE idtexture=?", (recID,))
 
                     if booDebug:
-                        xbmc.log("KCLEANER >> DELETED RECORD FROM DB: " + str(fileName))
+                        xbmc.log("KCLEANER >> DELETED RECORD FROM DB: " + str(thumbPath))
 
                     counter += 1
                 except Exception as e:
                     xbmc.log("KCLEANER >> SQL ERROR IN Textures13 DELETING ID: " + str(recID) + " >> " + str(e))
 
-    conn.execute("VACUUM")
-    conn.close()
+            if fileName.startswith("http://") or fileName.startswith("https://") or fileName.startswith("image://") or fileName.endswith("/transform?size=thumb"):
+                pass
+            else:
+                if not os.path.isfile(fileName):
+                    try:
+                        with conn:
+                            c.execute("DELETE FROM texture WHERE id=?", (recID,))
+                            c.execute("DELETE FROM sizes WHERE idtexture=?", (recID,))
+ 
+                        if booDebug:
+                            xbmc.log("KCLEANER >> DELETED RECORD FROM DB: " + str(fileName))
+
+                        counter += 1
+                    except Exception as e:
+                        xbmc.log("KCLEANER >> SQL ERROR IN Textures13 DELETING ID: " + str(recID) + " >> " + str(e))
+
+        conn.execute("VACUUM")
+    finally:
+        if conn:
+            conn.close()
 
     if counter > 0:
         newfileSize = os.path.getsize(dataBase)
@@ -487,8 +480,8 @@ def TextBoxes(heading, anounce):
         def setControls(self):
             self.win.getControl(self.CONTROL_LABEL).setLabel(heading)       # set heading
             try:
-                f = open(anounce)
-                text = f.read()
+                with open(anounce) as f:
+                    text = f.read()
             except Exception:
                 text = anounce
             self.win.getControl(self.CONTROL_TEXTBOX).setText(text)
@@ -520,15 +513,11 @@ def get_filename(filename):
 
 
 def DeleteFiles(cleanIt, iMode):
-    global __addon__
-    global arr
-    global ignoreAniGifs
     global ignore_existing_thumbs
     global ignore_packages
     global strEndMessage
-    global booDebug
 
-    __addon__.setSetting('lock', 'true')
+    __settings__.setBool('lock', True)
     intCancel = 0
     intObjects = 0
     count = 0
@@ -537,10 +526,14 @@ def DeleteFiles(cleanIt, iMode):
     intTot = 0
     grandTotal = 0
 
-    ignore_existing_thumbs = bool(strtobool(str(__addon__.getSetting('ignore_existing_thumbs').title())))
-    ignore_packages = int(__addon__.getSetting('ignore_packages'))
+    ignore_existing_thumbs = __settings__.getBool('ignore_existing_thumbs')
+    ignore_packages = __settings__.getInt('ignore_packages')
 
-    for j, entry in enumerate(arr):
+    kodi_old_log = os.path.join(TEMP_PATH, "kodi.old.log")
+    if not os.path.isdir(kodi_old_log):
+        kodi_old_log = None
+
+    for entry in arr:
         if entry[3] in cleanIt and not entry[4]:
             clear_cache_path = xbmcvfs.translatePath(entry[1])
             if os.path.exists(clear_cache_path):
@@ -552,58 +545,91 @@ def DeleteFiles(cleanIt, iMode):
 
     if iMode == 1:
         progress = xbmcgui.DialogProgressBG()
-        progress.create(strMess, strMess2)
     elif iMode == 0:
         progress = xbmcgui.DialogProgress()
-        progress.create(strMess, strMess2)
+    progress.create(strMess, strMess2)
 
     intObjects += 0.1
 
-    for j, entry in enumerate(arr):
+    strMess = __addon__.getLocalizedString(30013)             # Cleaning:
+    strMess2 = __addon__.getLocalizedString(30014)            # Deleted:
+    mess1 = __addon__.getLocalizedString(30113)                        # cleaned:
+    mess2 = __addon__.getLocalizedString(30112)                        # Mb:
+
+    arccPath = os.path.join(TEMP_PATH, "archive_cache")
+    for entry in arr:
         if entry[3] in cleanIt and not entry[4]:
             clear_cache_path = xbmcvfs.translatePath(entry[1])
 
             if os.path.exists(clear_cache_path):
                 anigPath = os.path.join(clear_cache_path, "animatedgifs")
-                arccPath = os.path.join(xbmcvfs.translatePath("special://temp"), "archive_cache")
 
-                if entry[3] == 'thumbnails':
-                    dataBase = os.path.join(xbmcvfs.translatePath("special://database/"), "Textures13.db")
-                    conn = sqlite3.connect(dataBase)
-                    c = conn.cursor()
+                conn = None
+                try:
+                    if entry[3] == 'thumbnails':
+                        dataBase = os.path.join(xbmcvfs.translatePath("special://database/"), "Textures13.db")
+                        conn = sqlite3.connect(f"file:{dataBase}?mode=ro", uri=True)
+                        c = conn.cursor()
 
-                if entry[3] == 'packages' and ignore_packages > 0:
-                    plist = getPackages()
+                    if entry[3] == 'packages' and ignore_packages > 0:
+                        plist = getPackages()
 
-                for root, dirs, files in os.walk(clear_cache_path):
-                    if (root != anigPath and root != arccPath) or (root == anigPath and not ignoreAniGifs):
-                        for f in files:
-                            strMess = __addon__.getLocalizedString(30013)             # Cleaning:
-                            strMess2 = __addon__.getLocalizedString(30014)            # Deleted:
+                    for root, dirs, files in os.walk(clear_cache_path):
+                        if (root != anigPath and root != arccPath and root != kodi_old_log) or (root == anigPath and not ignoreAniGifs):
+                            for f in files:
+                                percent = (count / intObjects) * 100
 
-                            percent = (count / intObjects) * 100
+                                message1 = strMess + entry[0] + "\n"
+                                message2 = strMess2 + str(int(count)) + " / " + str(int(intObjects))
 
-                            message1 = strMess + entry[0] + "\n"
-                            message2 = strMess2 + str(int(count)) + " / " + str(int(intObjects))
+                                if iMode < 2:
+                                    progress.update(int(percent), str(message1) + str(message2))
 
-                            if iMode < 2:
-                                progress.update(int(percent), str(message1) + str(message2))
+                                if iMode == 0:
+                                    try:
+                                        if progress.iscanceled():
+                                            intCancel = 1
+                                            break
+                                    except Exception:
+                                        pass
 
-                            if iMode == 0:
                                 try:
-                                    if progress.iscanceled():
-                                        intCancel = 1
-                                        break
+                                    fileSize = os.path.getsize(os.path.join(root, f))
                                 except Exception:
-                                    pass
+                                    fileSize = 0
 
-                            try:
-                                fileSize = os.path.getsize(os.path.join(root, f))
-                            except Exception:
-                                fileSize = 0
+                                if entry[3] == 'packages' and ignore_packages > 0:
+                                    if f in plist:
+                                        try:
+                                            os.unlink(os.path.join(root, f))
+                                            TotalfileSize += fileSize
+                                            if booDebug:
+                                                xbmc.log("KCLEANER >> DELETED >>" + f)
+                                        except Exception as e:
+                                            xbmc.log("KCLEANER >> CAN NOT DELETE FILE >>" + f + "<< ERROR: " + str(e))
 
-                            if entry[3] == 'packages' and ignore_packages > 0:
-                                if f in plist:
+                                        count += 1
+
+                                elif entry[3] == 'thumbnails' and ignore_existing_thumbs:
+                                    thumbFolder = os.path.split(root)[1]
+                                    thumbPath = thumbFolder + "/" + f
+
+                                    sqlstr = "SELECT * FROM texture WHERE cachedurl = ?"
+                                    c.execute(sqlstr, (thumbPath,))
+                                    data = c.fetchone()
+
+                                    if not data:
+                                        try:
+                                            os.unlink(os.path.join(root, f))
+                                            TotalfileSize += fileSize
+                                            if booDebug:
+                                                xbmc.log("KCLEANER >> DELETED >>" + f)
+                                        except Exception as e:
+                                            xbmc.log("KCLEANER >> CAN NOT DELETE FILE >>" + f + "<< ERROR: " + str(e))
+
+                                        count += 1
+
+                                else:
                                     try:
                                         os.unlink(os.path.join(root, f))
                                         TotalfileSize += fileSize
@@ -614,54 +640,23 @@ def DeleteFiles(cleanIt, iMode):
 
                                     count += 1
 
-                            elif entry[3] == 'thumbnails' and ignore_existing_thumbs:
-                                thumbFolder = os.path.split(root)[1]
-                                thumbPath = thumbFolder + "/" + f
-
-                                sqlstr = "SELECT * FROM texture WHERE cachedurl=" + "'" + thumbPath + "'"
-                                c.execute(sqlstr)
-                                data = c.fetchone()
-
-                                if not data:
-                                    try:
-                                        os.unlink(os.path.join(root, f))
-                                        TotalfileSize += fileSize
-                                        if booDebug:
-                                            xbmc.log("KCLEANER >> DELETED >>" + f)
-                                    except Exception as e:
-                                        xbmc.log("KCLEANER >> CAN NOT DELETE FILE >>" + f + "<< ERROR: " + str(e))
-
-                                    count += 1
-
-                            else:
-                                try:
-                                    os.unlink(os.path.join(root, f))
-                                    TotalfileSize += fileSize
-                                    if booDebug:
-                                        xbmc.log("KCLEANER >> DELETED >>" + f)
-                                except Exception as e:
-                                    xbmc.log("KCLEANER >> CAN NOT DELETE FILE >>" + f + "<< ERROR: " + str(e))
-
-                                count += 1
-
-                        if entry[2]:
-                            for d in dirs:
-                                if os.path.join(root, d) != anigPath and os.path.join(root, d) != arccPath:
-                                    try:
-                                        shutil.rmtree(os.path.join(root, d))
-                                        if booDebug:
-                                            xbmc.log("KCLEANER >> DELETED >>" + d)
-                                    except Exception as e:
-                                        xbmc.log("KCLEANER >> CAN NOT DELETE FOLDER >>" + d + "<< ERROR: " + str(e))
-                    else:
-                        pass
-
-                if entry[3] == 'thumbnails':
-                    conn.close()
+                            if entry[2]:
+                                for d in dirs:
+                                    d2 = os.path.join(root, d)
+                                    if d2 != anigPath and d2 != arccPath and d2 != kodi_old_log:
+                                        try:
+                                            shutil.rmtree(d2)
+                                            if booDebug:
+                                                xbmc.log("KCLEANER >> DELETED >>" + d)
+                                        except Exception as e:
+                                            xbmc.log("KCLEANER >> CAN NOT DELETE FOLDER >>" + d + "<< ERROR: " + str(e))
+                        else:
+                            pass
+                finally:
+                    if conn:
+                        conn.close()
 
                 if TotalfileSize > 0:
-                    mess1 = __addon__.getLocalizedString(30113)                        # cleaned:
-                    mess2 = __addon__.getLocalizedString(30112)                        # Mb:
                     mess3 = " %0.2f " % ((TotalfileSize / (1048576.00000001)),)
 
                     mess = entry[3].title() + " (" + entry[0] + "): " + entry[0] + mess1 + mess3 + mess2
@@ -687,14 +682,12 @@ def DeleteFiles(cleanIt, iMode):
 
 
 def getPackages():
-    global ignore_packages
-
     packAge = []
 
     clear_cache_path = xbmcvfs.translatePath('special://home/addons/packages')
     if os.path.exists(clear_cache_path):
         for root, dirs, files in os.walk(clear_cache_path):
-            for e, f in enumerate(files):
+            for f in files:
                 name = os.path.splitext(f)[0]
                 version = name.rsplit('-', 1)
                 dt = os.path.getmtime(os.path.join(root, f))
@@ -703,18 +696,18 @@ def getPackages():
 
         uniquePackage = set()
 
-        for e, item in enumerate(packAge):
-            uniquePackage.add(packAge[e][0])
+        for item in packAge:
+            uniquePackage.add(item[0])
 
         deletePackages = []
 
         for item in uniquePackage:
             strVers = []
-            for e, lst in enumerate(packAge):
-                if packAge[e][0] == item:
-                    strVers.append(packAge[e])
+            for lst in packAge:
+                if lst[0] == item:
+                    strVers.append(lst)
 
-            strVers.sort(key=lambda date: packAge[e][2])
+            strVers.sort(key=lambda date: lst[2])
             strVers.reverse()
 
             for i, vv in enumerate(strVers):
@@ -729,10 +722,9 @@ def getPackages():
 
 
 def CompactDatabases(iMode):
-    global __addon__
     global strEndMessage
 
-    __addon__.setSetting('lock', 'true')
+    __settings__.setBool('lock', True)
     intCancel = 0
     intObjects = 0
     counter = 0
@@ -753,15 +745,18 @@ def CompactDatabases(iMode):
     dbPath = xbmcvfs.translatePath("special://database/")
     intObjects = 0
 
+    strMess = __addon__.getLocalizedString(30017)             # Compacting:
+    strMess2 = __addon__.getLocalizedString(30018)            # Compacted:
+    mess1 = __addon__.getLocalizedString(30110)             # Database
+    mess2 = __addon__.getLocalizedString(30111)             # compacted:
+    mess4 = __addon__.getLocalizedString(30112)             # Mb
+
     if os.path.exists(dbPath):
         files = ([f for f in os.listdir(dbPath) if f.endswith('.db') and os.path.isfile(os.path.join(dbPath, f))])
         intObjects = len(files)
         intObjects += 0.1
 
         for f in files:
-            strMess = __addon__.getLocalizedString(30017)             # Compacting:
-            strMess2 = __addon__.getLocalizedString(30018)            # Compacted:
-
             percent = (counter / intObjects) * 100
 
             message1 = strMess + f + "\n"
@@ -778,17 +773,15 @@ def CompactDatabases(iMode):
                 except Exception:
                     pass
 
-            fileSizeBefore = os.path.getsize(os.path.join(dbPath, f))
-            CompactDB(os.path.join(dbPath, f))
-            fileSizeAfter = os.path.getsize(os.path.join(dbPath, f))
+            f2 = os.path.join(dbPath, f)
+            fileSizeBefore = os.path.getsize(f2)
+            CompactDB(f2)
+            fileSizeAfter = os.path.getsize(f2)
 
             xbmc.log("KCLEANER >> COMPACTED DATABASE >>" + f)
 
             if fileSizeAfter != fileSizeBefore:
-                mess1 = __addon__.getLocalizedString(30110)             # Database
-                mess2 = __addon__.getLocalizedString(30111)             # compacted:
                 mess3 = " %0.2f " % (((fileSizeBefore - fileSizeAfter) / (1048576.00000001)),)
-                mess4 = __addon__.getLocalizedString(30112)             # Mb
                 strEndMessage += mess1 + f + mess2 + mess3 + mess4 + "\n"
 
                 intTot += (fileSizeBefore - fileSizeAfter) / 1048576.00000001
@@ -810,9 +803,14 @@ def CompactDatabases(iMode):
 
 
 def CompactDB(SQLiteFile):
-    conn = sqlite3.connect(SQLiteFile)
-    conn.execute("VACUUM")
-    conn.close()
+    conn = None
+    try:
+        conn = sqlite3.connect(SQLiteFile)
+        with conn:
+            conn.execute("VACUUM")
+    finally:
+        if conn:
+            conn.close()
 
 # ============================================================
 # Get list of repositories
@@ -820,8 +818,6 @@ def CompactDB(SQLiteFile):
 
 
 def getLocalRepos():
-    global booDebug
-
     installedRepos = []
     repos = getJson("Addons.GetAddons", "type", "xbmc.addon.repository", "addons")
     for f in repos:
@@ -839,8 +835,6 @@ def getLocalRepos():
 
 
 def getLocalAddons():
-    global booDebug
-
     installedAddons = []
     addons = getJson("Addons.GetAddons", "type", "unknown", "addons")
     for f in addons:
@@ -877,10 +871,9 @@ def getLocalAddonDataFolders():
 
 
 def deleteAddonData(iMode):
-    global __addon__
     global strEndMessage
 
-    __addon__.setSetting('lock', 'true')
+    __settings__.setBool('lock', True)
     intCancel = 0
     counter = 0
     TotalfileSize = 0
@@ -1001,7 +994,6 @@ def getJson(method, param1, param2, retname):
 
 
 def ProcessAddons(iMode):
-    global booDebug
     global strEndMessage
 
     intCancel = 0
@@ -1074,9 +1066,11 @@ def ProcessAddons(iMode):
             continue
 
         if a in AddonsInRepo:
-            xbmc.log("KCLEANER >> ADDON >> " + a + " >> FOUND")
+            if booDebug:
+                xbmc.log("KCLEANER >> ADDON >> " + a + " >> FOUND")
         else:
-            xbmc.log("KCLEANER >> ADDON >> " + a + " >> IS IN NO REPOSITORY")
+            if booDebug:
+                xbmc.log("KCLEANER >> ADDON >> " + a + " >> IS IN NO REPOSITORY")
             mess1 = __addon__.getLocalizedString(30122)             # IS IN NO REPOSITORY
             strEndMessage += a + " [B][COLOR red]" + mess1 + "[/B][/COLOR]\n"
 
@@ -1092,7 +1086,6 @@ def ProcessAddons(iMode):
 
 
 def ProcessRepos(iMode):
-    global booDebug
     global strEndMessage
 
     intCancel = 0
@@ -1120,7 +1113,8 @@ def ProcessRepos(iMode):
         else:
             repoxml = os.path.join(xbmcvfs.translatePath("special://home"), "addons", r, "addon.xml")
 
-        xbmc.log("KCLEANER >> PROCESSING REPO >>" + r)
+        if booDebug:
+            xbmc.log("KCLEANER >> PROCESSING REPO >>" + r)
 
         strMess = __addon__.getLocalizedString(30025)             # Checking:
         strMess2 = __addon__.getLocalizedString(30026)            # Checked:
@@ -1143,7 +1137,8 @@ def ProcessRepos(iMode):
         AddonsInRepo = GetAddonsInRepo(repoxml, r)
 
         if len(AddonsInRepo) == 0:
-            xbmc.log("KCLEANER >> REPO >> " + r + " >> " + repoxml + " >> EMPTY OR ERROR")
+            if booDebug:
+                xbmc.log("KCLEANER >> REPO >> " + r + " >> " + repoxml + " >> EMPTY OR ERROR")
             mess1 = __addon__.getLocalizedString(30120)             # EMPTY OR ERROR READING
             strEndMessage += r + " [B][COLOR red]" + mess1 + "[/B][/COLOR]\n"
         else:
@@ -1153,7 +1148,8 @@ def ProcessRepos(iMode):
                     similar.append(tup)
 
             if len(similar) == 0:
-                xbmc.log("KCLEANER >> REPO >> " + r + " >> CONTAINS NO LOCAL ADDONS")
+                if booDebug:
+                    xbmc.log("KCLEANER >> REPO >> " + r + " >> CONTAINS NO LOCAL ADDONS")
                 mess1 = __addon__.getLocalizedString(30121)             # CONTAINS NO LOCAL ADDONS
                 strEndMessage += r + " [B][COLOR red]" + mess1 + "[/B][/COLOR]\n"
             else:
@@ -1173,8 +1169,6 @@ def ProcessRepos(iMode):
 
 
 def GetAddonsInRepo(netxml, repo):
-    global booDebug
-
     allAddonsInRepo = []
 
     if os.path.exists(netxml):
@@ -1206,8 +1200,6 @@ def GetAddonsInRepo(netxml, repo):
 
 
 def getRepoPath(xmlFile):
-    global booDebug
-
     XmlInfo = []
 
     xmldoc = minidom.parse(xmlFile)
@@ -1230,33 +1222,19 @@ def getRepoPath(xmlFile):
 
 
 def getPathAddons(xmlFile, repo):
-    global booDebug
-
     XmlInfo = []
 
     try:
         req = urllib.request.Request(xmlFile)
         req.add_header('User-Agent', ' Mozilla/5.0 (Windows; U; Windows NT 5.1; en-GB; rv:1.9.0.3) Gecko/2008092417 Firefox/3.0.3')
-        response = urllib.request.urlopen(req)
-        httpdata = response.read()
-        response.close()
-
+        with urllib.request.urlopen(req) as response:
+            httpdata = response.read()
     except Exception as e:
-        xbmc.log("KCLEANER >> ERROR >>" + str(e).encode('utf-8'))
+        xbmc.log("KCLEANER >> ERROR >>" + str(e))
         return ""
 
     if get_extension(xmlFile) == "gz":
-        gzFile = os.path.join(xbmcvfs.translatePath('special://temp'), 'addon.gz')
-        xbmc.log("KCLEANER >> GZFILE >>" + str(gzFile))
-        with open(gzFile, 'wb') as output:
-            output.write(httpdata)
-
-        with gzip.open(gzFile, 'rb') as f:
-            httpdata = f.read()
-
-#        f = gzip.GzipFile(gzFile, 'rb')
-#        httpdata = f.read()
-#        f.close()
+        httpdata = gzip.decompress(httpdata)
 
     try:
         xmldoc = minidom.parseString(httpdata)
@@ -1308,34 +1286,34 @@ def GetSettings():
     global fast_thumb_check
     global listview
 
-    ignoreAniGifs = bool(strtobool(str(__addon__.getSetting('ignore0').title())))
-    booDebug = bool(strtobool(str(__addon__.getSetting('debug').title())))
-    booConfirm = bool(strtobool(str(__addon__.getSetting('confirm').title())))
-    booBackgroundRun = bool(strtobool(str(__addon__.getSetting('autoclean').title())))
+    ignoreAniGifs = __settings__.getBool('ignore0')
+    booDebug = __settings__.getBool('debug')
+    booConfirm = __settings__.getBool('confirm')
+    booBackgroundRun = __settings__.getBool('autoclean')
 
-    ignore1 = bool(strtobool(str(__addon__.getSetting('ignore1').title())))
-    ignore2 = bool(strtobool(str(__addon__.getSetting('ignore2').title())))
-    ignore3 = bool(strtobool(str(__addon__.getSetting('ignore3').title())))
-    ignore4 = bool(strtobool(str(__addon__.getSetting('ignore4').title())))
-    ignore5 = bool(strtobool(str(__addon__.getSetting('ignore5').title())))
-    ignore6 = bool(strtobool(str(__addon__.getSetting('ignore6').title())))
-    ignore7 = bool(strtobool(str(__addon__.getSetting('ignore7').title())))
-    ignore8 = bool(strtobool(str(__addon__.getSetting('ignore8').title())))
-    ignore9 = bool(strtobool(str(__addon__.getSetting('ignore9').title())))
-    ignoreA = bool(strtobool(str(__addon__.getSetting('ignoreA').title())))
-    ignoreB = bool(strtobool(str(__addon__.getSetting('ignoreB').title())))
-    ignoreC = bool(strtobool(str(__addon__.getSetting('ignoreC').title())))
-    ignoreD = bool(strtobool(str(__addon__.getSetting('ignoreD').title())))
-    ignore_existing_thumbs = bool(strtobool(str(__addon__.getSetting('ignore_existing_thumbs').title())))
-    fast_thumb_check = bool(strtobool(str(__addon__.getSetting('fast_thumb_check').title())))
-    ignore_packages = int(__addon__.getSetting('ignore_packages'))
-    numberOfPaths = int(__addon__.getSetting('numberOfPaths'))
-    listview = bool(strtobool(str(__addon__.getSetting('listview').title())))
+    ignore1 = __settings__.getBool('ignore1')
+    ignore2 = __settings__.getBool('ignore2')
+    ignore3 = __settings__.getBool('ignore3')
+    ignore4 = __settings__.getBool('ignore4')
+    ignore5 = __settings__.getBool('ignore5')
+    ignore6 = __settings__.getBool('ignore6')
+    ignore7 = __settings__.getBool('ignore7')
+    ignore8 = __settings__.getBool('ignore8')
+    ignore9 = __settings__.getBool('ignore9')
+    ignoreA = __settings__.getBool('ignoreA')
+    ignoreB = __settings__.getBool('ignoreB')
+    ignoreC = __settings__.getBool('ignoreC')
+    ignoreD = __settings__.getBool('ignoreD')
+    ignore_existing_thumbs = __settings__.getBool('ignore_existing_thumbs')
+    fast_thumb_check = __settings__.getBool('fast_thumb_check')
+    ignore_packages = __settings__.getInt('ignore_packages')
+    numberOfPaths = __settings__.getInt('numberOfPaths')
+    listview = __settings__.getBool('listview')
 
-    path_1 = __addon__.getSetting('path_1')
-    path_2 = __addon__.getSetting('path_2')
-    path_3 = __addon__.getSetting('path_3')
-    path_4 = __addon__.getSetting('path_4')
+    path_1 = __settings__.getString('path_1')
+    path_2 = __settings__.getString('path_2')
+    path_3 = __settings__.getString('path_3')
+    path_4 = __settings__.getString('path_4')
 
 # ============================================================
 # Display results of cleaning
@@ -1343,13 +1321,11 @@ def GetSettings():
 
 
 def showResults():
-    global __addon__
     global totalSizes
 
     totalSizes = CalcDeleted()
-    fp = open(os.path.join(__addondir__, "shared.pkl"), "wb")
-    pickle.dump(totalSizes, fp)
-    fp.close()
+    with open(os.path.join(__addondir__, "shared.json"), "w") as fp:
+        json.dump(totalSizes, fp)
 
     if intCancel == 0:
         header = "[B][COLOR red]" + __addon__.getLocalizedString(30133) + "[/B][/COLOR]"             # Cleanup report:
@@ -1363,7 +1339,7 @@ def showResults():
         strMess = __addon__.getLocalizedString(30031)                                     # Cleanup [COLOR red]done[/COLOR].
         xbmc.executebuiltin("XBMC.Notification(%s,%s,2000,%s)" % (__addonname__, strMess, __addon__.getAddonInfo('icon')))
 
-    __addon__.setSetting('lock', 'false')
+    __settings__.setBool('lock', False)
 
     while True:
         xbmc.sleep(200)
@@ -1374,7 +1350,8 @@ def showResults():
 
     xbmc.sleep(100)
     xbmc.executebuiltin('Container.Refresh')
-    xbmc.log("KCLEANER >> FINISHED")
+    if booDebug:
+        xbmc.log("KCLEANER >> FINISHED")
 
 
 # ============================================================
@@ -1382,10 +1359,6 @@ def showResults():
 # ============================================================
 
 def mainMenu():
-    global __addon__
-    global totalSizes
-    global listview
-
     if listview:
         xbmc.executebuiltin("Container.SetViewMode(500)")
 
@@ -1402,10 +1375,7 @@ def mainMenu():
 
 
 def CleanMenu():
-    global __addon__
-    global totalSizes
     global ignore_existing_thumbs
-    global listview
 
     if listview:
         xbmc.executebuiltin("Container.SetViewMode(500)")
@@ -1415,7 +1385,7 @@ def CleanMenu():
     addItem(__addon__.getLocalizedString(30161) + " (" + str(totalSizes[1][1]) + __addon__.getLocalizedString(30112) + ")",
             'url', 11, os.path.join(mediaPath, "clean.png"))    # Clean Packages
 
-    ignore_existing_thumbs = bool(strtobool(str(__addon__.getSetting('ignore_existing_thumbs').title())))
+    ignore_existing_thumbs = __settings__.getBool('ignore_existing_thumbs')
 
     if ignore_existing_thumbs:
         if fast_thumb_check:
@@ -1430,7 +1400,7 @@ def CleanMenu():
     addItem(__addon__.getLocalizedString(30163) + " (" + str(totalSizes[3][1]) + __addon__.getLocalizedString(30112) + ")",
             'url', 13, os.path.join(mediaPath, "clean.png"))    # Clean Add-ons
 
-    numberOfPaths = int(__addon__.getSetting('numberOfPaths'))
+    numberOfPaths = __settings__.getInt('numberOfPaths')
     if numberOfPaths > 0:
         addItem(__addon__.getLocalizedString(30044) + " (" + str(totalSizes[4][1]) + __addon__.getLocalizedString(30112) + ")",
                 'url', 15, os.path.join(mediaPath, "clean.png"))    # Custom paths
@@ -1451,9 +1421,6 @@ def CleanMenu():
 
 
 def DatabasesMenu():
-    global __addon__
-    global listview
-
     if listview:
         xbmc.executebuiltin("Container.SetViewMode(500)")
 
@@ -1466,9 +1433,6 @@ def DatabasesMenu():
 
 
 def ChecksMenu():
-    global __addon__
-    global listview
-
     if listview:
         xbmc.executebuiltin("Container.SetViewMode(500)")
 
@@ -1552,7 +1516,7 @@ __addonwd__ = xbmcvfs.translatePath(__addon__.getAddonInfo('path'))
 __addondir__ = xbmcvfs.translatePath(__addon__.getAddonInfo('profile'))
 __addonname__ = __addon__.getAddonInfo('name')
 __version__ = __addon__.getAddonInfo('version')
-
+__settings__ = __addon__.getSettings()
 mediaPath = os.path.join(__addonwd__, 'media')
 
 xbmc.log("KCLEANER >> STARTED VERSION %s" % (__version__))
@@ -1590,19 +1554,21 @@ mess = ""
 strEndMessage = ""
 arr = []
 
+TEMP_PATH = xbmcvfs.translatePath('special://temp')
+
 GetSettings()
 
 arr.append(['Cache', 'special://home/cache', True, "cache", False])
-if os.path.join(xbmcvfs.translatePath('special://temp'), "") != os.path.join(xbmcvfs.translatePath('special://home/cache'), ""):
+if os.path.join(TEMP_PATH, "") != os.path.join(xbmcvfs.translatePath('special://home/cache'), ""):
     arr.append(['Temp', 'special://temp', True, "cache", False])
 arr.append(['Packages', 'special://home/addons/packages', True, "packages", False])
 arr.append(['Thumbnails', 'special://thumbnails', False, "thumbnails", False])
 
-numberOfPaths = int(__addon__.getSetting('numberOfPaths'))
+numberOfPaths = __settings__.getInt('numberOfPaths')
 if numberOfPaths > 0:
     for x in range(1, numberOfPaths+1):
         pathnr = "path_" + str(x)
-        pp = __addon__.getSetting(pathnr)
+        pp = __settings__.getString(pathnr)
         if os.path.exists(pp):
             if x == 1:
                 arr.append(["Custom Paths", pp, True, "custom", False])
@@ -1667,10 +1633,13 @@ strEndMessage = ""
 strMess = __addon__.getLocalizedString(30021)                                         # Choose Action:
 intCancel = 0
 
-xbmc.log('KCLEANER SERVICE >> RUNNING APP...' + str(xbmcgui.Window(xbmcgui.getCurrentWindowId()).getProperty('kcleaner')))
-
 if __name__ == '__main__':
-    if __addon__.getSetting('lock') == 'true':
+    if booDebug:
+        xbmc.log('KCLEANER SERVICE >> RUNNING APP...' + str(xbmcgui.Window(xbmcgui.getCurrentWindowId()).getProperty('kcleaner')))
+ 
+    if not os.path.exists(__addondir__):
+        __settings__.setBool('lock', False)
+    elif __settings__.getBool('lock'):
         exit()
 
     params = get_params()
@@ -1693,15 +1662,13 @@ if __name__ == '__main__':
 
     if mode is None or url is None or len(url) < 1:                                                                # MAIN MENU
         totalSizes = CalcDeleted()
-        fp = open(os.path.join(__addondir__, "shared.pkl"), "wb")
-        pickle.dump(totalSizes, fp)
-        fp.close()
+        with open(os.path.join(__addondir__, "shared.json"), "w") as fp:
+            json.dump(totalSizes, fp)
         mainMenu()
 
     elif mode == 1:                                                                                                # CLEAN MENU
-        fp = open(os.path.join(__addondir__, "shared.pkl"), "rb")
-        totalSizes = pickle.load(fp)
-        fp.close()
+        with open(os.path.join(__addondir__, "shared.json"), "r") as fp:
+            totalSizes = json.load(fp)
         CleanMenu()
 
     elif mode == 2:                                                                                                # DATABASE MENU
@@ -1741,7 +1708,7 @@ if __name__ == '__main__':
     elif mode == 10:                                                                                               # 0 - CACHE
         mode -= 10
         WhatToClean = ""
-        for j, entry in enumerate(arr):
+        for entry in arr:
             if entry[3] in actionToken[mode]:
                 clear_cache_path = xbmcvfs.translatePath(entry[1])
                 if os.path.exists(clear_cache_path):
@@ -1764,7 +1731,7 @@ if __name__ == '__main__':
     elif mode == 11:                                                                                               # 1 - PACKAGES
         mode -= 10
         WhatToClean = ""
-        for j, entry in enumerate(arr):
+        for entry in arr:
             if entry[3] in actionToken[mode]:
                 clear_cache_path = xbmcvfs.translatePath(entry[1])
                 if os.path.exists(clear_cache_path):
@@ -1787,7 +1754,7 @@ if __name__ == '__main__':
     elif mode == 12:                                                                                               # 2 - THUMBS
         mode -= 10
         WhatToClean = ""
-        for j, entry in enumerate(arr):
+        for entry in arr:
             if entry[3] in actionToken[mode]:
                 clear_cache_path = xbmcvfs.translatePath(entry[1])
                 if os.path.exists(clear_cache_path):
@@ -1810,7 +1777,7 @@ if __name__ == '__main__':
     elif mode == 13:                                                                                               # 3 - ADDONS
         mode -= 10
         WhatToClean = ""
-        for j, entry in enumerate(arr):
+        for entry in arr:
             if entry[3] in actionToken[mode]:
                 clear_cache_path = xbmcvfs.translatePath(entry[1])
                 if os.path.exists(clear_cache_path):
@@ -1846,7 +1813,7 @@ if __name__ == '__main__':
         mode -= 11
 
         WhatToClean = ""
-        for j, entry in enumerate(arr):
+        for entry in arr:
             if entry[3] in actionToken[mode]:
                 clear_cache_path = xbmcvfs.translatePath(entry[1])
                 if os.path.exists(clear_cache_path):
@@ -1870,7 +1837,7 @@ if __name__ == '__main__':
         mode -= 11
 
         WhatToClean = ""
-        for j, entry in enumerate(arr):
+        for entry in arr:
             if entry[3] in actionToken[mode]:
                 clear_cache_path = xbmcvfs.translatePath(entry[1])
                 if os.path.exists(clear_cache_path):
@@ -1893,7 +1860,7 @@ if __name__ == '__main__':
     elif mode == 17:                                                                                               # 6 - ALL
         mode -= 11
         WhatToClean = ""
-        for j, entry in enumerate(arr):
+        for entry in arr:
             if entry[3] in actionToken[mode]:
                 clear_cache_path = xbmcvfs.translatePath(entry[1])
                 if os.path.exists(clear_cache_path):
@@ -1991,7 +1958,8 @@ if __name__ == '__main__':
 
         showResults()
 
-    xbmc.log("KCLEANER >> FINISHED")
+    if booDebug:
+        xbmc.log("KCLEANER >> FINISHED")
     xbmcplugin.endOfDirectory(int(sys.argv[1]))
 
 # ------------------------------------------------------------
